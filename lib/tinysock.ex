@@ -8,22 +8,26 @@ defmodule TinySock do
   TinySock.start_link(
     path: "/tmp",
     handler: fn
-      {"DUMP-ETS", path} ->
-        for tab <- [:sessions1, :sessions2, :sessions3] do
-          :ok = :ets.tab2file(tab, Path.join(path, "ets#{tab}"))
-        end
+      {"DUMP-ETS", requested_version, path} ->
+        if requested_version == SessionV2.module_info[:md5] do
+          for tab <- [:sessions1, :sessions2, :sessions3] do
+            :ok = :ets.tab2file(tab, Path.join(path, "ets#{tab}"))
+          end
 
-        {:reply, :ok}
+          :ok
+        else
+          {:error, :invalid_version}
+        end
     end
   )
 
   dump_path = "/tmp/ysSEjw"
   File.mkdir_p!(dump_path)
 
-  :ok = TinySock.call("/tmp/tinysockN8Yd9g", {"DUMP-ETS", dump_path})
-
-  for "ets" <> tab <- File.ls!(dump_path) do
-    :ets.file2tab(Path.join(dump_path, tab))
+  with :ok <- TinySock.call("/tmp/tinysockN8Yd9g", {"DUMP-ETS", SessionV2.module_info[:md5], dump_path}) do
+    for "ets" <> tab <- File.ls!(dump_path) do
+      :ets.file2tab(Path.join(dump_path, tab))
+    end
   end
   ```
   """
