@@ -127,21 +127,33 @@ Benchee.run(
     #   {fn -> Bench.dumpscan(:test, "json.dump", &:json.encode/1, 524_288) end,
     #    after_each: fn _ -> File.rm("json.dump") end}
     "dump as term_to_binary" =>
-      {fn -> Bench.dumpscan(:test, "term_to_binary.dump", &:erlang.term_to_binary/1) end,
-       after_each: fn _ -> File.rm("term_to_binary.dump") end},
+      {fn file ->
+         Bench.dumpscan(:test, file, &:erlang.term_to_binary/1)
+         file
+       end,
+       before_each: fn _ -> "term_to_binary#{System.unique_integer()}.dump" end,
+       after_each: fn file -> File.rm(file) end},
     "dump as tab2file" =>
-      {fn -> :ets.tab2file(:test, ~c"tab2file.dump") end,
-       after_each: fn _ -> File.rm("tab2file.dump") end},
+      {fn file ->
+         :ets.tab2file(:test, file)
+         file
+       end,
+       before_each: fn _ -> ~c"tab2file#{System.unique_integer()}.dump" end,
+       after_each: fn file -> File.rm(file) end},
     "pass through socket" =>
-      {fn _ -> Bench.sendscan(:test, "dump.sock", &:erlang.term_to_binary/1) end,
+      {fn file ->
+         Bench.sendscan(:test, file, &:erlang.term_to_binary/1)
+         file
+       end,
        before_each: fn _ ->
-         File.rm("dump.sock")
+         file = "dump#{System.unique_integer()}.sock"
+         File.rm(file)
          parent = self()
 
          spawn_link(fn ->
            {:ok, l} =
              :gen_tcp.listen(0, [
-               {:ifaddr, {:local, "dump.sock"}},
+               {:ifaddr, {:local, file}},
                :binary,
                packet: :raw,
                nodelay: true,
@@ -159,8 +171,11 @@ Benchee.run(
          receive do
            :go -> :ok
          end
+
+         file
        end,
-       after_each: fn _ -> File.rm("dump.sock") end}
-  }
+       after_each: fn file -> File.rm(file) end}
+  },
+  parallel: System.schedulers()
   # profile_after: :tprof
 )
