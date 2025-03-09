@@ -21,7 +21,7 @@ defmodule SessionsTransfer.MixProject do
   # Run "mix help deps" to learn about dependencies.
   defp deps do
     [
-      {:benchee, "~> 1.3"}
+      {:benchee, github: "bencheeorg/benchee"}
     ]
   end
 end

@@ -156,10 +156,14 @@ defmodule TinySock do
   end
 
   defp sock_recv(socket, timeout) do
-    with {:ok, <<@tag_data, size::64>>} <- :gen_tcp.recv(socket, @tag_data_size + 8, timeout),
+    with {:ok, <<@tag_data, more::1, size::63>>} <-
+           :gen_tcp.recv(socket, @tag_data_size + 8, timeout),
          {:ok, binary} <- :gen_tcp.recv(socket, size, timeout) do
       try do
-        {:ok, :erlang.binary_to_term(binary, [:safe])}
+        case more do
+          0 -> {:done, :erlang.binary_to_term(binary, [:safe])}
+          1 -> {:more, binary}
+        end
       rescue
         e -> {:error, e}
       end
