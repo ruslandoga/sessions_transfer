@@ -86,7 +86,7 @@ defmodule TinySock do
         GenServer.start_link(__MODULE__, {base_path, handler}, gen_opts)
 
       {:error, reason} ->
-        Logger.error(
+        Logger.warning(
           "tinysock failed to create directory at #{inspect(base_path)}, reason: #{inspect(reason)}"
         )
 
@@ -104,11 +104,11 @@ defmodule TinySock do
         {:ok, state}
 
       {:error, reason} ->
-        Logger.error(
+        Logger.warning(
           "tinysock failed to open a listen socket in #{inspect(base_path)}, reason: #{inspect(reason)}"
         )
 
-        {:stop, :shutdown}
+        :ignore
     end
   end
 
@@ -135,7 +135,7 @@ defmodule TinySock do
         {:noreply, state}
 
       :emfile ->
-        raise File.Error, reason: reason, action: "accept"
+        raise File.Error, reason: reason, action: "accept socket", path: "tinysock lol"
 
       reason ->
         # :telemetry.execute([:reuse, :acceptor, :crash], reason)
