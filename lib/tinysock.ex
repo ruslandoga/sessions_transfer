@@ -32,7 +32,7 @@ defmodule TinySock do
   ```
   """
 
-  use GenServer
+  use GenServer, restart: :transient
   require Logger
 
   @listen_opts [:binary, packet: :raw, nodelay: true, backlog: 128, active: false]
