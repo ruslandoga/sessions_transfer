@@ -1,5 +1,5 @@
 defmodule UDSTest do
-  use ExUnit.Case
+  use ExUnit.Case, async: true
 
   @listen_opts [:binary, packet: :raw, nodelay: true, backlog: 128, active: false]
   @connect_opts [:binary, packet: :raw, nodelay: true, active: false]

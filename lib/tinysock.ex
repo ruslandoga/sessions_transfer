@@ -5,8 +5,8 @@ defmodule TinySock do
   ## Usage
 
   ```elixir
-  TinySock.start_link(
-    path: "/tmp",
+  TinySock.server(
+    base_path: "/tmp",
     handler: fn
       {"DUMP-ETS", requested_version, path} ->
         if requested_version == SessionV2.module_info[:md5] do
@@ -32,7 +32,7 @@ defmodule TinySock do
   ```
   """
 
-  use Task
+  use GenServer
   require Logger
 
   @listen_opts [:binary, packet: :raw, nodelay: true, backlog: 128, active: false]
@@ -41,36 +41,14 @@ defmodule TinySock do
   @tag_data "tinysock"
   @tag_data_size byte_size(@tag_data)
 
-  @doc "TODO"
-  def start_link(opts) do
-    base_path = Keyword.fetch!(opts, :path)
-    handler = Keyword.fetch!(opts, :handler)
+  def server(opts), do: start_link(opts)
+  def socket(server), do: GenServer.call(server, :socket)
 
-    case File.mkdir_p(base_path) do
-      :ok ->
-        Task.start_link(fn -> TinySock.serve(base_path, handler) end)
-
-      {:error, reason} ->
-        Logger.error(
-          "failed to create directory at #{inspect(base_path)}, reason: #{inspect(reason)}"
-        )
-
-        :ignore
-    end
+  def acceptors(server) do
+    :ets.tab2list(GenServer.call(server, :acceptors))
   end
 
-  @doc false
-  def serve(base_path, handler) do
-    case sock_listen_or_retry(base_path) do
-      {:ok, listen_socket, _sock_path} ->
-        handle_message_loop(listen_socket, handler)
-
-      {:error, reason} ->
-        Logger.error(
-          "failed to open a listen socket in #{inspect(base_path)}, reason: #{inspect(reason)}"
-        )
-    end
-  end
+  def stop(server), do: GenServer.stop(server)
 
   @doc "TODO"
   def list(base_path) do
@@ -97,32 +75,118 @@ defmodule TinySock do
     end
   end
 
-  defp handle_message_loop(listen_socket, handler) do
-    case :gen_tcp.accept(listen_socket) do
-      {:ok, socket} ->
-        with {:ok, message} <- sock_recv(socket, _timeout = :timer.seconds(5)) do
-          try do
-            with {:reply, reply} <- handler.(message) do
-              sock_send(socket, :erlang.term_to_binary(reply))
-            end
-          rescue
-            e ->
-              message = Exception.format(:error, e, __STACKTRACE__)
-              Logger.error("failed to handle message, reason: " <> message)
-          after
-            sock_close(socket)
-          end
+  @doc false
+  def start_link(opts) do
+    {gen_opts, opts} = Keyword.split(opts, [:debug, :name, :spawn_opt, :hibernate_after])
+    base_path = Keyword.fetch!(opts, :base_path)
+    handler = Keyword.fetch!(opts, :handler)
 
-          handle_message_loop(listen_socket, handler)
-        else
-          other ->
-            Logger.error("failed to receive message, reason: #{inspect(other)}")
-            :gen_tcp.close(socket)
-            handle_message_loop(listen_socket, handler)
-        end
+    case File.mkdir_p(base_path) do
+      :ok ->
+        GenServer.start_link(__MODULE__, {base_path, handler}, gen_opts)
 
       {:error, reason} ->
-        Logger.error("failed to accept connection, shutting down, reason: #{inspect(reason)}")
+        Logger.error(
+          "tinysock failed to create directory at #{inspect(base_path)}, reason: #{inspect(reason)}"
+        )
+
+        :ignore
+    end
+  end
+
+  @impl true
+  def init({base_path, handler}) do
+    case sock_listen_or_retry(base_path) do
+      {:ok, socket} ->
+        acceptors = :ets.new(:acceptors, [:protected])
+        state = {socket, acceptors, handler}
+        for _ <- 1..10, do: spawn_acceptor(state)
+        {:ok, state}
+
+      {:error, reason} ->
+        Logger.error(
+          "tinysock failed to open a listen socket in #{inspect(base_path)}, reason: #{inspect(reason)}"
+        )
+
+        {:stop, :shutdown}
+    end
+  end
+
+  @impl true
+  def handle_call(:acceptors, _from, {_socket, acceptors, _handler} = state) do
+    {:reply, acceptors, state}
+  end
+
+  def handle_call(:socket, _from, {socket, _acceptors, _handler} = state) do
+    {:reply, socket, state}
+  end
+
+  @impl true
+  def handle_cast(:accepted, {socket, _acceptors, _handler} = state) do
+    if socket, do: spawn_acceptor(state)
+    {:noreply, state}
+  end
+
+  @impl true
+  def handle_info({:DOWN, _ref, :process, pid, reason}, state) do
+    case reason do
+      :normal ->
+        remove_acceptor(state, pid)
+        {:noreply, state}
+
+      :emfile ->
+        raise File.Error, reason: reason, action: "accept"
+
+      reason ->
+        # :telemetry.execute([:reuse, :acceptor, :crash], reason)
+        Logger.error("tinysock acceptor crashed, reason: #{inspect(reason)}")
+        {:noreply, state}
+    end
+  end
+
+  defp remove_acceptor({_socket, acceptors, _handler}, pid) do
+    :ets.delete(acceptors, pid)
+  end
+
+  defp spawn_acceptor({socket, acceptors, handler}) do
+    {pid, _ref} =
+      :proc_lib.spawn_opt(
+        __MODULE__,
+        :accept_loop,
+        [_parent = self(), socket, handler],
+        [:monitor]
+      )
+
+    :ets.insert(acceptors, {pid})
+  end
+
+  @doc false
+  def accept_loop(parent, listen_socket, handler) do
+    case :gen_tcp.accept(listen_socket, :timer.seconds(5)) do
+      {:ok, socket} ->
+        GenServer.cast(parent, :accepted)
+        handle_message(socket, handler)
+
+      {:error, :timeout} ->
+        accept_loop(parent, listen_socket, handler)
+
+      {:error, :closed} ->
+        :ok
+
+      {:error, reason} ->
+        exit(reason)
+    end
+  end
+
+  defp handle_message(socket, handler) do
+    {:ok, message} = sock_recv(socket, _timeout = :timer.seconds(5))
+
+    try do
+      with {:reply, reply} <- handler.(message) do
+        sock_send(socket, :erlang.term_to_binary(reply))
+      end
+    after
+      sock_close(socket)
     end
   end
 
@@ -131,7 +195,7 @@ defmodule TinySock do
     sock_path = Path.join(base_path, sock_name)
 
     case :gen_tcp.listen(0, [{:ifaddr, {:local, sock_path}} | @listen_opts]) do
-      {:ok, socket} -> {:ok, socket, sock_path}
+      {:ok, socket} -> {:ok, socket}
       {:error, :eaddrinuse} -> sock_listen_or_retry(base_path)
       {:error, reason} -> {:error, reason}
     end
@@ -146,6 +210,10 @@ defmodule TinySock do
         error
 
       {:error, _reason} = error ->
+        Logger.notice(
+          "tinysock failed to connect to #{inspect(sock_path)}, reason: #{inspect(error)}"
+        )
+
         _ = File.rm(sock_path)
         error
     end
@@ -156,14 +224,10 @@ defmodule TinySock do
   end
 
   defp sock_recv(socket, timeout) do
-    with {:ok, <<@tag_data, more::1, size::63>>} <-
-           :gen_tcp.recv(socket, @tag_data_size + 8, timeout),
+    with {:ok, <<@tag_data, size::64>>} <- :gen_tcp.recv(socket, @tag_data_size + 8, timeout),
          {:ok, binary} <- :gen_tcp.recv(socket, size, timeout) do
       try do
-        case more do
-          0 -> {:done, :erlang.binary_to_term(binary, [:safe])}
-          1 -> {:more, binary}
-        end
+        {:ok, :erlang.binary_to_term(binary, [:safe])}
       rescue
         e -> {:error, e}
       end

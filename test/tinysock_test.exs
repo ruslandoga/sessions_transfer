@@ -3,13 +3,11 @@ defmodule TinySockTest do
   @moduletag :tmp_dir
 
   test "it works", %{tmp_dir: tmp_dir} do
-    start_supervised!({TinySock, path: tmp_dir, handler: fn :ping -> {:reply, :pong} end})
-    :timer.sleep(100)
+    server =
+      start_supervised!({TinySock, base_path: tmp_dir, handler: fn :ping -> {:reply, :pong} end})
 
-    assert {:ok, [_ | _] = sock_paths} = TinySock.list(tmp_dir)
-
-    for sock_path <- sock_paths do
-      assert {:ok, :pong} = TinySock.call(sock_path, :ping)
-    end
+    assert {:ok, {:local, sock_path}} = :inet.sockname(TinySock.socket(server))
+    assert {:ok, [^sock_path]} = TinySock.list(tmp_dir)
+    assert {:ok, :pong} = TinySock.call(sock_path, :ping)
   end
 end
