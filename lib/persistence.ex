@@ -81,12 +81,11 @@ defmodule Plausible.Session.Persistence do
     cache_names = Plausible.Cache.Adapter.get_names(:sessions)
 
     dumps =
-      Enum.flat_map(cache_names, fn cache_name ->
+      cache_names
+      |> Enum.map(fn cache_name ->
         tab = ConCache.ets(cache_name)
 
-        if :ets.info(tab, :size) == 0 do
-          []
-        else
+        if :ets.info(tab, :size) > 0 do
           path = Path.join(dump_path, to_string(cache_name))
 
           Task.async(fn ->
@@ -95,12 +94,16 @@ defmodule Plausible.Session.Persistence do
           end)
         end
       end)
+      |> Enum.reject(&is_nil/1)
 
     Task.await_many(dumps)
   end
 
+  defp maybe_ets_whereis(tab) when is_atom(tab), do: :ets.whereis(tab)
+  defp maybe_ets_whereis(tab), do: tab
+
   defp dumpscan(tab, file) do
-    tab = :ets.whereis(tab)
+    tab = maybe_ets_whereis(tab)
     :ets.safe_fixtable(tab, true)
 
     File.rm(file)

@@ -7,17 +7,24 @@ defmodule SessionsTransferTest do
 
   test "it works" do
     tmp_dir = Path.join(System.tmp_dir!(), "tinysock_test")
+
     File.mkdir_p!(tmp_dir)
     on_exit(fn -> File.rm_rf!(tmp_dir) end)
 
     old = start_another_plausible(tmp_dir)
     session = put_session(old, %{user_id: "123"})
+
+    new = start_another_plausible(tmp_dir)
+    await_transfer(new)
+
+    assert get_session(new, {session.site_id, session.user_id}) == session
   end
 
   defp start_another_plausible(data_dir) do
     {:ok, pid, _node} = :peer.start_link(%{connection: {{127, 0, 0, 1}, 0}})
     add_code_paths(pid)
     transfer_configuration(pid)
+    :ok = :peer.call(pid, Application, :put_env, [:plausible, :data_dir, data_dir])
     ensure_applications_started(pid)
     pid
   end
@@ -61,5 +68,29 @@ defmodule SessionsTransferTest do
     session = struct!(default, overrides)
     key = {session.site_id, session.user_id}
     :peer.call(pid, Plausible.Cache.Adapter, :put, [:sessions, key, session, [dirty?: true]])
+  end
+
+  defp get_session(pid, key) do
+    :peer.call(pid, Plausible.Cache.Adapter, :get, [:sessions, key])
+  end
+
+  defp await_transfer(pid, timeout \\ 1000) do
+    test = self()
+
+    spawn_link(fn ->
+      await_loop(fn -> :peer.call(pid, Plausible.Session.Persistence, :took?, []) end)
+      send(test, :took)
+    end)
+
+    assert_receive :took, timeout
+  end
+
+  defp await_loop(f) do
+    :timer.sleep(100)
+
+    case f.() do
+      true -> :done
+      false -> await_loop(f)
+    end
   end
 end
