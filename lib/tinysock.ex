@@ -5,6 +5,10 @@ defmodule Plausible.Session.Persistence.TinySock do
   ## Usage
 
   ```elixir
+  <<<<<<< HEAD
+  base_path = Path.join(System.tmp_dir!(), "tinysock")
+  File.mkdir_p!(base_path)
+  =======
   TinySock.start_link(
     base_path: "/tmp",
     handler: fn
@@ -13,14 +17,19 @@ defmodule Plausible.Session.Persistence.TinySock do
           for tab <- [:sessions1, :sessions2, :sessions3] do
             :ok = :ets.tab2file(tab, Path.join(path, "ets#{tab}"))
           end
+  >>>>>>> master
 
-          :ok
-        else
-          {:error, :invalid_version}
-        end
-    end
+  TinySock.start_link(
+    base_path: base_path,
+    handler: fn :ping -> :pong end
   )
 
+  <<<<<<< HEAD
+  {:ok, [sock_path]} = TinySock.list(base_path)
+  {:ok, :pong} = TinySock.call(sock_path, :ping)
+
+  File.rm_rf!(base_path)
+  =======
   dump_path = "/tmp/ysSEjw"
   File.mkdir_p!(dump_path)
   [sock_path] = TinySock.list("/tmp")
@@ -30,6 +39,7 @@ defmodule Plausible.Session.Persistence.TinySock do
       :ets.file2tab(Path.join(dump_path, tab))
     end
   end
+  >>>>>>> master
   ```
   """
 
@@ -64,14 +74,20 @@ defmodule Plausible.Session.Persistence.TinySock do
 
   @doc """
   Makes a call to a TinySock server at the given socket path:
+  <<<<<<< HEAD
+  connects to the server, sends a message, receives a response, closes the connection.
+
+  Also removes stale files for the sockets it couldn't connect to.
+  =======
   connects to the server, sends a message, waits for a response,
   closes the connection.
+  >>>>>>> master
   """
   @spec call(Path.t(), term, timeout) :: {:ok, reply :: term} | {:error, :timeout | :inet.posix()}
   def call(sock_path, message, timeout \\ :timer.seconds(5)) do
     with {:ok, socket} <- sock_connect_or_rm(sock_path, timeout) do
       try do
-        with :ok <- sock_send(socket, :erlang.term_to_binary(message)) do
+        with :ok <- sock_send(socket, :erlang.term_to_iovec(message)) do
           sock_recv(socket, timeout)
         end
       after
@@ -85,32 +101,31 @@ defmodule Plausible.Session.Persistence.TinySock do
     {gen_opts, opts} = Keyword.split(opts, [:debug, :name, :spawn_opt, :hibernate_after])
     base_path = Keyword.fetch!(opts, :base_path)
     handler = Keyword.fetch!(opts, :handler)
-
-    case File.mkdir_p(base_path) do
-      :ok ->
-        GenServer.start_link(__MODULE__, {base_path, handler}, gen_opts)
-
-      {:error, reason} ->
-        Logger.warning(
-          "tinysock failed to create directory at #{inspect(base_path)}, reason: #{inspect(reason)}"
-        )
-
-        :ignore
-    end
+    GenServer.start_link(__MODULE__, {base_path, handler}, gen_opts)
   end
 
   @impl true
   def init({base_path, handler}) do
-    case sock_listen_or_retry(base_path) do
-      {:ok, socket} ->
-        Process.flag(:trap_exit, true)
-        state = %{socket: socket, handler: handler}
-        for _ <- 1..10, do: spawn_acceptor(state)
-        {:ok, state}
+    case File.mkdir_p(base_path) do
+      :ok ->
+        case sock_listen_or_retry(base_path) do
+          {:ok, socket} ->
+            Process.flag(:trap_exit, true)
+            state = %{socket: socket, handler: handler}
+            for _ <- 1..10, do: spawn_acceptor(state)
+            {:ok, state}
+
+          {:error, reason} ->
+            Logger.warning(
+              "tinysock failed to bind a listen socket in #{inspect(base_path)}, reason: #{inspect(reason)}"
+            )
+
+            :ignore
+        end
 
       {:error, reason} ->
         Logger.warning(
-          "tinysock failed to bind a listen socket in #{inspect(base_path)}, reason: #{inspect(reason)}"
+          "tinysock failed to create directory #{inspect(base_path)}, reason: #{inspect(reason)}"
         )
 
         :ignore
@@ -130,8 +145,13 @@ defmodule Plausible.Session.Persistence.TinySock do
         {:noreply, state}
 
       :emfile ->
-        Logger.error("tinysock ran out of file descriptors, exiting")
+        Logger.error("tinysock ran out of file descriptors, stopping")
         {:stop, reason, state}
+
+      {e, stacktrace} when is_exception(e) ->
+        message = Exception.format(:exit, e, stacktrace)
+        Logger.error("tinysock request handler exited with error: " <> message)
+        {:noreply, state}
 
       reason ->
         Logger.error("tinysock request handler exited with unexpected reason: #{inspect(reason)}")
@@ -163,7 +183,8 @@ defmodule Plausible.Session.Persistence.TinySock do
 
   defp handle_message(socket, handler) do
     {:ok, message} = sock_recv(socket, _timeout = :timer.seconds(5))
-    sock_send(socket, :erlang.term_to_binary(handler.(message)))
+
+    sock_send(socket, :erlang.term_to_iovec(handler.(message)))
   after
     sock_shut_and_close(socket)
   end
@@ -188,10 +209,6 @@ defmodule Plausible.Session.Persistence.TinySock do
         error
 
       {:error, _reason} = error ->
-        Logger.notice(
-          "tinysock failed to connect to #{inspect(sock_path)}, reason: #{inspect(error)}"
-        )
-
         # removes stale socket file
         # possible - but unlikely - race condition
         _ = File.rm(sock_path)
