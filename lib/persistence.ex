@@ -1,6 +1,6 @@
 defmodule Plausible.Session.Persistence do
   @moduledoc """
-  Cross-deployment persistence and sharing for `:sessions` cache.
+  Cross-deployment persistence for `:sessions` cache.
 
   It works by establishing a client-server architecture where:
   - The "taker" one-time task retrieves ETS data from other processes via Unix domain sockets
@@ -12,9 +12,8 @@ defmodule Plausible.Session.Persistence do
   alias Plausible.ClickhouseSessionV2
   alias Plausible.Session.Persistence.TinySock
 
-  @took_sessions_key :took_sessions
-  def took?, do: Application.get_env(:plausible, @took_sessions_key, false)
-  defp took, do: Application.put_env(:plausible, @took_sessions_key, true)
+  def took?, do: Application.get_env(:plausible, :took_sessions, false)
+  defp took, do: Application.put_env(:plausible, :took_sessions, true)
 
   @doc false
   def child_spec(opts) do
@@ -29,11 +28,8 @@ defmodule Plausible.Session.Persistence do
   def start_link(opts) do
     base_path = Keyword.fetch!(opts, :base_path)
 
-    # TODO
-    File.mkdir_p!(base_path)
-
-    taker = {Task, fn -> take_all_ets(base_path) end}
-    giver = {TinySock, base_path: base_path, handler: &give_ets_handler/1}
+    taker = {Task, fn -> try_take_all_ets(base_path) end}
+    giver = {TinySock, base_path: base_path, handler: &giver_handler/1}
 
     children = [
       # TODO?
@@ -42,7 +38,17 @@ defmodule Plausible.Session.Persistence do
       Supervisor.child_spec(giver, restart: :transient)
     ]
 
-    Supervisor.start_link(children, strategy: :one_for_one)
+    case File.mkdir_p(base_path) do
+      :ok ->
+        Supervisor.start_link(children, strategy: :one_for_one)
+
+      {:error, reason} ->
+        Logger.warning(
+          "#{__MODULE__} failed to create directory #{inspect(base_path)}, reason: #{inspect(reason)}"
+        )
+
+        :ignore
+    end
   end
 
   defp session_version do
@@ -55,138 +61,94 @@ defmodule Plausible.Session.Persistence do
     ])
   end
 
-  @give_tag "GIVE-ETS"
-
-  defp give_ets_handler(message) do
+  defp giver_handler(message) do
     case message do
-      {@give_tag, session_version, dump_path} ->
-        maybe_give_ets(session_version, dump_path)
+      {:list, session_version} ->
+        if session_version == session_version() and took?() do
+          Plausible.Cache.Adapter.get_names(:sessions)
+          |> Enum.map(&ConCache.ets/1)
+          |> Enum.filter(fn tab -> :ets.info(tab, :size) > 0 end)
+        else
+          []
+        end
+
+      {:send, tab} ->
+        dumpscan(tab)
 
       message ->
-        Logger.error("Unknown message in #{__MODULE__}: #{inspect(message)}")
+        Logger.error(
+          "#{__MODULE__} tinysock handler received unknown message: #{inspect(message)}"
+        )
+
         :badarg
     end
   end
 
-  defp maybe_give_ets(session_version, dump_path) do
-    if session_version == session_version() and took?() do
-      give_ets(dump_path)
-    else
-      []
-    end
-  end
-
-  @spec give_ets(Path.t()) :: [Path.t()]
-  defp give_ets(dump_path) do
-    cache_names = Plausible.Cache.Adapter.get_names(:sessions)
-
-    dumps =
-      cache_names
-      |> Enum.map(fn cache_name ->
-        tab = ConCache.ets(cache_name)
-
-        if :ets.info(tab, :size) > 0 do
-          path = Path.join(dump_path, to_string(cache_name))
-
-          Task.async(fn ->
-            :ok = dumpscan(tab, path)
-            path
-          end)
-        end
-      end)
-      |> Enum.reject(&is_nil/1)
-
-    Task.await_many(dumps)
-  end
-
   defp maybe_ets_whereis(tab) when is_atom(tab), do: :ets.whereis(tab)
-  defp maybe_ets_whereis(tab), do: tab
+  defp maybe_ets_whereis(tab) when is_reference(tab), do: tab
 
-  defp dumpscan(tab, file) do
+  defp dumpscan(tab) do
     tab = maybe_ets_whereis(tab)
     :ets.safe_fixtable(tab, true)
 
-    File.rm(file)
-    fd = File.open!(file, [:raw, :binary, :append, :exclusive])
-
     try do
-      dumpscan_continue(:ets.first_lookup(tab), [], 0, tab, fd)
+      dumpscan_continue(:ets.first_lookup(tab), _acc = [], tab)
     after
       :ets.safe_fixtable(tab, false)
-      :ok = File.close(fd)
     end
   end
 
-  defp dumpscan_continue({k, [record]}, cache, cache_len, tab, fd) do
-    {_key, %ClickhouseSessionV2{}} = record
-
-    # TODO: use json or plain maps? and then Ecto.Changeset.cast?
-    bin = :erlang.term_to_binary(record)
-    bin_len = byte_size(bin)
-    new_cache = append_cache(cache, <<bin_len::64-little, bin::bytes>>)
-    new_cache_len = cache_len + bin_len + 8
-
-    if new_cache_len > 500_000 do
-      :ok = :file.write(fd, new_cache)
-      dumpscan_continue(:ets.next_lookup(tab, k), [], 0, tab, fd)
-    else
-      dumpscan_continue(:ets.next_lookup(tab, k), new_cache, new_cache_len, tab, fd)
-    end
+  defp dumpscan_continue({k, [record]}, acc, tab) do
+    # TODO to map?
+    {_k, %ClickhouseSessionV2{}} = record
+    dumpscan_continue(:ets.next_lookup(tab, k), [record | acc], tab)
   end
 
-  defp dumpscan_continue(:"$end_of_table", cache, cache_len, _tab, fd) do
-    if cache_len > 0 do
-      :ok = :file.write(fd, cache)
-    end
-
-    :ok
+  defp dumpscan_continue(:"$end_of_table", acc, _tab) do
+    acc
   end
 
-  @dialyzer :no_improper_lists
-  @compile {:inline, append_cache: 2}
-  defp append_cache([], bin), do: bin
-  defp append_cache(cache, bin), do: [cache | bin]
+  defp try_take_all_ets(base_path) do
+    counter = :counters.new(1, [:write_concurrency])
 
-  defp take_all_ets(base_path) do
     try do
-      # TODO sort socks by timestamp?
-      with {:ok, socks} <- TinySock.list(base_path) do
-        session_version = session_version()
-
-        Enum.each(socks, fn sock ->
-          rand_dump = "dump" <> Base.url_encode64(:crypto.strong_rand_bytes(6))
-          dump_path = Path.join(base_path, rand_dump)
-          take_ets(sock, session_version, dump_path)
-        end)
-      end
+      take_all_ets(base_path, counter)
     after
+      Logger.notice("#{__MODULE__} took #{:counters.get(counter, 1)} sessions")
       took()
     end
   end
 
-  defp take_ets(sock, session_version, dump_path) do
-    File.mkdir_p!(dump_path)
+  defp take_all_ets(base_path, counter) do
+    # TODO sort socks by timestamp?
+    with {:ok, socks} <- TinySock.list(base_path) do
+      session_version = session_version()
 
-    try do
-      with {:ok, dumps} <- TinySock.call(sock, {@give_tag, session_version, dump_path}) do
-        loads =
-          Enum.map(dumps, fn path ->
-            Task.async(fn -> savescan(File.read!(path)) end)
-          end)
+      Enum.each(socks, fn sock ->
+        with {:ok, tabs} <- TinySock.call(sock, {:list, session_version}) do
+          tasks =
+            Enum.map(tabs, fn tab ->
+              Task.async(fn ->
+                with {:ok, records} <- TinySock.call(sock, {:send, tab}) do
+                  savescan(records, counter)
+                end
+              end)
+            end)
 
-        Task.await_many(loads)
-      end
-    after
-      File.rm_rf!(dump_path)
+          Task.await_many(tasks)
+        end
+      end)
     end
   end
 
-  defp savescan(<<bin_len::64-little, bin::size(bin_len)-bytes, rest::bytes>>) do
-    {key, %ClickhouseSessionV2{} = session} = :erlang.binary_to_term(bin, [:safe])
+  defp savescan([record | rest], counter) do
+    {key, %ClickhouseSessionV2{} = session} = record
+    # TODO try to Ecto.Changeset.cast?
     # TODO upsert? only if newer? i.e. more events?
     Plausible.Cache.Adapter.put(:sessions, key, session)
-    savescan(rest)
+    :counters.add(counter, 1, 1)
+    savescan(rest, counter)
   end
 
-  defp savescan(<<>>), do: :ok
+  defp savescan([], _counter), do: :ok
 end
