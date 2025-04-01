@@ -5,18 +5,41 @@ defmodule Plausible.Session.Persistence.TinySock do
   ## Usage
 
   ```elixir
+  <<<<<<< HEAD
   base_path = Path.join(System.tmp_dir!(), "tinysock")
   File.mkdir_p!(base_path)
+  =======
+  TinySock.start_link(
+    base_path: "/tmp",
+    handler: fn
+      {"DUMP-ETS", requested_version, path} ->
+        if requested_version == SessionV2.module_info(:md5) do
+          for tab <- [:sessions1, :sessions2, :sessions3] do
+            :ok = :ets.tab2file(tab, Path.join(path, "ets#{tab}"))
+          end
+  >>>>>>> master
 
   TinySock.start_link(
     base_path: base_path,
     handler: fn :ping -> :pong end
   )
 
+  <<<<<<< HEAD
   {:ok, [sock_path]} = TinySock.list(base_path)
   {:ok, :pong} = TinySock.call(sock_path, :ping)
 
   File.rm_rf!(base_path)
+  =======
+  dump_path = "/tmp/ysSEjw"
+  File.mkdir_p!(dump_path)
+  [sock_path] = TinySock.list("/tmp")
+
+  with :ok <- TinySock.call(sock_path, {"DUMP-ETS", SessionV2.module_info(:md5), dump_path}) do
+    for "ets" <> tab <- File.ls!(dump_path) do
+      :ets.file2tab(Path.join(dump_path, tab))
+    end
+  end
+  >>>>>>> master
   ```
   """
 
@@ -51,9 +74,14 @@ defmodule Plausible.Session.Persistence.TinySock do
 
   @doc """
   Makes a call to a TinySock server at the given socket path:
+  <<<<<<< HEAD
   connects to the server, sends a message, receives a response, closes the connection.
 
   Also removes stale files for the sockets it couldn't connect to.
+  =======
+  connects to the server, sends a message, waits for a response,
+  closes the connection.
+  >>>>>>> master
   """
   @spec call(Path.t(), term, timeout) :: {:ok, reply :: term} | {:error, :timeout | :inet.posix()}
   def call(sock_path, message, timeout \\ :timer.seconds(5)) do
@@ -155,6 +183,7 @@ defmodule Plausible.Session.Persistence.TinySock do
 
   defp handle_message(socket, handler) do
     {:ok, message} = sock_recv(socket, _timeout = :timer.seconds(5))
+
     sock_send(socket, :erlang.term_to_iovec(handler.(message)))
   after
     sock_shut_and_close(socket)

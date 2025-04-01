@@ -115,6 +115,7 @@ defmodule Plausible.Session.Persistence do
       take_all_ets(base_path, counter)
     after
       Logger.notice("#{__MODULE__} took #{:counters.get(counter, 1)} sessions")
+
       took()
     end
   end
