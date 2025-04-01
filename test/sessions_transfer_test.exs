@@ -12,7 +12,7 @@ defmodule SessionsTransferTest do
     on_exit(fn -> File.rm_rf!(tmp_dir) end)
 
     old = start_another_plausible(tmp_dir)
-    session = put_session(old, %{user_id: "123"})
+    session = put_session(old, %{user_id: 123})
 
     new = start_another_plausible(tmp_dir)
     await_transfer(new)
@@ -51,17 +51,20 @@ defmodule SessionsTransferTest do
   end
 
   defp put_session(pid, overrides) do
+    user_id = overrides[:user_id] || Enum.random(1000..2000)
+    session_id = user_id * 1000 + Enum.random(0..1000)
+
     default = %Plausible.ClickhouseSessionV2{
       sign: 1,
-      session_id: Ecto.UUID.generate(),
-      user_id: Ecto.UUID.generate(),
+      session_id: session_id,
+      user_id: user_id,
       hostname: "example.com",
       site_id: Enum.random(1000..10_000),
       entry_page: "/",
       pageviews: 1,
       events: 1,
-      start: DateTime.utc_now(:second),
-      timestamp: DateTime.utc_now(:second),
+      start: NaiveDateTime.utc_now(:second),
+      timestamp: NaiveDateTime.utc_now(:second),
       is_bounce: false
     }
 
