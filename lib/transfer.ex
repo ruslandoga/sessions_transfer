@@ -32,7 +32,13 @@ defmodule Plausible.Session.Transfer do
 
   @doc false
   def start_link(opts) do
-    maybe_start_link(Keyword.fetch!(opts, :base_path))
+    result = maybe_start_link(Keyword.fetch!(opts, :base_path))
+
+    if result == :ignore do
+      took()
+    end
+
+    result
   end
 
   defp maybe_start_link(base_path) do
@@ -40,7 +46,7 @@ defmodule Plausible.Session.Transfer do
       is_nil(base_path) ->
         :ignore
 
-      :ok == TinySock.mkdir(base_path) ->
+      :ok == TinySock.write_dir(base_path) ->
         do_start_link(base_path)
 
       true ->
@@ -76,20 +82,19 @@ defmodule Plausible.Session.Transfer do
 
   defp giver_handler(message) do
     case message do
-      {:list, session_version} ->
-        if session_version == session_version() and took?() do
-          Plausible.Cache.Adapter.get_names(:sessions)
-          |> Enum.map(&ConCache.ets/1)
-          |> Enum.filter(fn tab -> :ets.info(tab, :size) > 0 end)
-        else
-          []
-        end
+      {:list, session_version} -> tabs(session_version)
+      {:send, tab} -> dumpscan(tab)
+      :took -> gave()
+    end
+  end
 
-      {:send, tab} ->
-        dumpscan(tab)
-
-      :took ->
-        gave()
+  defp tabs(session_version) do
+    if session_version == session_version() and took?() do
+      Plausible.Cache.Adapter.get_names(:sessions)
+      |> Enum.map(&ConCache.ets/1)
+      |> Enum.filter(fn tab -> :ets.info(tab, :size) > 0 end)
+    else
+      []
     end
   end
 
@@ -138,9 +143,17 @@ defmodule Plausible.Session.Transfer do
   end
 
   defp take_all_ets_everywhere(base_path, counter) do
-    # TODO sort socks by timestamp?
     with {:ok, socks} <- TinySock.list(base_path) do
-      Enum.each(socks, fn sock -> take_all_ets(sock, counter) end)
+      socks
+      |> Enum.sort_by(&file_stat_ctime/1, :asc)
+      |> Enum.each(fn sock -> take_all_ets(sock, counter) end)
+    end
+  end
+
+  defp file_stat_ctime(path) do
+    case File.stat(path) do
+      {:ok, stat} -> stat.ctime
+      {:error, _} -> 0
     end
   end
 
@@ -148,8 +161,9 @@ defmodule Plausible.Session.Transfer do
     with {:ok, tabs} <- TinySock.call(sock, {:list, session_version()}) do
       tasks = Enum.map(tabs, fn tab -> Task.async(fn -> take_one_ets(sock, counter, tab) end) end)
       Task.await_many(tasks)
-      TinySock.call(sock, :took)
     end
+  after
+    TinySock.call(sock, :took)
   end
 
   defp take_one_ets(sock, counter, tab) do
@@ -160,14 +174,17 @@ defmodule Plausible.Session.Transfer do
 
   @session_fields ClickhouseSessionV2.__schema__(:fields)
 
-  defp savescan([{key, session} | rest], counter) do
-    changeset = Ecto.Changeset.cast(%ClickhouseSessionV2{}, session, @session_fields)
+  defp savescan([{key, params} | rest], counter) do
+    changeset = Ecto.Changeset.cast(%ClickhouseSessionV2{}, params, @session_fields)
 
     if changeset.valid? do
-      session = Ecto.Changeset.apply_changes(changeset)
-      # TODO upsert? only if newer? i.e. more events?
-      Plausible.Cache.Adapter.put(:sessions, key, session)
-      :counters.add(counter, 1, 1)
+      new_session = Ecto.Changeset.apply_changes(changeset)
+      old_session = Plausible.Cache.Adapter.get(:sessions, key)
+
+      if is_nil(old_session) or new_session.events >= old_session.events do
+        Plausible.Cache.Adapter.put(:sessions, key, new_session)
+        :counters.add(counter, 1, 1)
+      end
     end
 
     savescan(rest, counter)
