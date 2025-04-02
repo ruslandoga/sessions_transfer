@@ -11,9 +11,11 @@ defmodule Plausible.Application do
           global_ttl: :timer.minutes(30),
           ets_options: [read_concurrency: true, write_concurrency: true]
         ),
-        if data_dir = Application.get_env(:plausible, :data_dir) do
-          {Plausible.Session.Persistence, base_path: Path.join(data_dir, "sessions")}
-        end
+        Supervisor.child_spec(
+          {Plausible.Session.Transfer,
+           base_path: Application.get_env(:plausible, :session_transfer_dir)},
+          shutdown: :timer.seconds(15)
+        )
       ]
       |> List.flatten()
       |> Enum.reject(&is_nil/1)

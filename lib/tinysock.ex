@@ -1,4 +1,4 @@
-defmodule Plausible.Session.Persistence.TinySock do
+defmodule Plausible.Session.Transfer.TinySock do
   @moduledoc false
   use GenServer
   require Logger

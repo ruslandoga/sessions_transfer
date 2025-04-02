@@ -1,6 +1,6 @@
-defmodule Plausible.Session.Persistence do
+defmodule Plausible.Session.Transfer do
   @moduledoc """
-  Cross-deployment persistence for `:sessions` cache.
+  Cross-deployment transfer for `:sessions` cache.
 
   It works by establishing a client-server architecture where:
   - The "taker" one-time task retrieves ETS data from other processes via Unix domain sockets
@@ -11,7 +11,7 @@ defmodule Plausible.Session.Persistence do
   require Logger
 
   alias Plausible.ClickhouseSessionV2
-  alias Plausible.Session.Persistence.{TinySock, Alive}
+  alias Plausible.Session.Transfer.{TinySock, Alive}
 
   def took?, do: Application.get_env(:plausible, :took_sessions, false)
   defp took, do: Application.put_env(:plausible, :took_sessions, true)

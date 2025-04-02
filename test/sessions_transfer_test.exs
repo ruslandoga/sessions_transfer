@@ -20,11 +20,11 @@ defmodule SessionsTransferTest do
     assert get_session(new, {session.site_id, session.user_id}) == session
   end
 
-  defp start_another_plausible(data_dir) do
+  defp start_another_plausible(tmp_dir) do
     {:ok, pid, _node} = :peer.start_link(%{connection: {{127, 0, 0, 1}, 0}})
     add_code_paths(pid)
     transfer_configuration(pid)
-    :ok = :peer.call(pid, Application, :put_env, [:plausible, :data_dir, data_dir])
+    :ok = :peer.call(pid, Application, :put_env, [:plausible, :session_transfer_dir, tmp_dir])
     ensure_applications_started(pid)
     pid
   end
@@ -81,7 +81,7 @@ defmodule SessionsTransferTest do
     test = self()
 
     spawn_link(fn ->
-      await_loop(fn -> :peer.call(pid, Plausible.Session.Persistence, :took?, []) end)
+      await_loop(fn -> :peer.call(pid, Plausible.Session.Transfer, :took?, []) end)
       send(test, :took)
     end)
 

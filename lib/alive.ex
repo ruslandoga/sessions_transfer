@@ -1,4 +1,4 @@
-defmodule Plausible.Session.Persistence.Alive do
+defmodule Plausible.Session.Transfer.Alive do
   @moduledoc false
   use GenServer
 

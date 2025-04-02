@@ -1,6 +1,6 @@
 defmodule TinySockTest do
   use ExUnit.Case, async: true
-  alias Plausible.Session.Persistence.TinySock
+  alias Plausible.Session.Transfer.TinySock
 
   @moduletag :tmp_dir
 
