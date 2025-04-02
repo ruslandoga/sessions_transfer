@@ -19,7 +19,7 @@ defmodule Plausible.Session.Transfer do
   def gave?, do: Application.get_env(:plausible, :gave_sessions, false)
   defp gave, do: Application.put_env(:plausible, :gave_sessions, true)
 
-  def telemetry_event_transfer, do: [:plausible, :sessions, :transfer]
+  def telemetry_event, do: [:plausible, :sessions, :transfer]
 
   @doc false
   def child_spec(opts) do
@@ -132,7 +132,7 @@ defmodule Plausible.Session.Transfer do
     after
       count = :counters.get(counter, 1)
       duration = System.monotonic_time() - started
-      :telemetry.execute(telemetry_event_transfer(), %{count: count, duration: duration})
+      :telemetry.execute(telemetry_event(), %{count: count, duration: duration})
       took()
     end
   end
