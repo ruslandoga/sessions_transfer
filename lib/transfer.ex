@@ -9,12 +9,12 @@ defmodule Plausible.Session.Transfer do
   """
 
   require Logger
-
-  alias Plausible.ClickhouseSessionV2
   alias Plausible.Session.Transfer.{TinySock, Alive}
 
   def took?, do: Application.get_env(:plausible, :took_sessions, false)
   defp took, do: Application.put_env(:plausible, :took_sessions, true)
+
+  # TODO await took?
 
   def gave?, do: Application.get_env(:plausible, :gave_sessions, false)
   defp gave, do: Application.put_env(:plausible, :gave_sessions, true)
@@ -70,12 +70,12 @@ defmodule Plausible.Session.Transfer do
   end
 
   defp session_version do
-    IO.iodata_to_binary([
-      ClickhouseSessionV2.module_info(:md5),
+    [
+      Plausible.ClickhouseSessionV2.module_info(:md5),
       Plausible.Cache.Adapter.module_info(:md5),
       Plausible.Session.CacheStore.module_info(:md5),
       __MODULE__.module_info(:md5)
-    ])
+    ]
   end
 
   @doc false
@@ -114,27 +114,27 @@ defmodule Plausible.Session.Transfer do
     with {:ok, socks} <- TinySock.list(base_path) do
       socks
       |> Enum.sort_by(&file_stat_ctime/1, :asc)
-      |> Enum.each(fn sock -> take_all_ets(sock) end)
+      |> Enum.each(&take_all_ets/1)
     end
   end
 
   defp file_stat_ctime(path) do
     case File.stat(path) do
       {:ok, stat} -> stat.ctime
-      {:error, _} -> 0
+      {:error, _} -> nil
     end
   end
 
   defp take_all_ets(sock) do
     with {:ok, tabs} <- TinySock.call(sock, {:list, session_version()}) do
-      tasks = Enum.map(tabs, fn tab -> Task.async(fn -> take_one_ets(sock, tab) end) end)
+      tasks = Enum.map(tabs, fn tab -> Task.async(fn -> take_ets(sock, tab) end) end)
       Task.await_many(tasks, :timer.seconds(10))
     end
   after
     TinySock.call(sock, :took)
   end
 
-  defp take_one_ets(sock, tab) do
+  defp take_ets(sock, tab) do
     with {:ok, records} <- TinySock.call(sock, {:send, tab}) do
       Plausible.Cache.Adapter.put_many(:sessions, records)
     end
