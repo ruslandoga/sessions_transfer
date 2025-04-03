@@ -94,11 +94,11 @@ defmodule Bench do
 
   def sendscan(tab, sock, dumpfn) do
     {:ok, socket} =
-      :gen_tcp.connect(
-        {:local, sock},
-        0,
-        [mode: :binary, packet: :raw, nodelay: true, active: false],
-        5000
+      :gen_tcp.connect({:local, sock}, 0,
+        mode: :binary,
+        packet: :raw,
+        nodelay: true,
+        active: false
       )
 
     :ets.safe_fixtable(tab, true)
@@ -113,6 +113,7 @@ defmodule Bench do
   end
 
   defp do_sendscan({k, [{_, v}]}, cache, cache_len, tab, socket, dumpfn) do
+    # v = Map.filter(v, &Bench.session_params_filter/1)
     bin = dumpfn.(v)
     bin_len = byte_size(bin)
     true = bin_len < 4_294_967_296
@@ -149,11 +150,11 @@ defmodule Bench do
 
   def onesend(tab, sock) do
     {:ok, socket} =
-      :gen_tcp.connect(
-        {:local, sock},
-        0,
-        [mode: :binary, packet: :raw, nodelay: true, active: false],
-        5000
+      :gen_tcp.connect({:local, sock}, 0,
+        mode: :binary,
+        packet: :raw,
+        nodelay: true,
+        active: false
       )
 
     :ets.safe_fixtable(tab, true)
@@ -169,12 +170,114 @@ defmodule Bench do
   end
 
   defp onepass({k, [{_, v}]}, acc, tab) do
+    # v = Map.filter(v, &Bench.session_params_filter/1)
+    v = values(v)
     onepass(:ets.next_lookup(tab, k), [v | acc], tab)
   end
 
   defp onepass(:"$end_of_table", acc, _tab) do
     acc
   end
+
+  @doc false
+  def session_params_filter({:__struct__, _}), do: false
+  def session_params_filter({:__meta__, _}), do: false
+  def session_params_filter({_, nil}), do: false
+  def session_params_filter({_, _}), do: true
+
+  @compile {:inline, values: 1}
+  defp values(session) do
+    %Plausible.ClickhouseSessionV2{
+      hostname: hostname,
+      site_id: site_id,
+      user_id: user_id,
+      session_id: session_id,
+      start: start,
+      duration: duration,
+      is_bounce: is_bounce,
+      entry_page: entry_page,
+      exit_page: exit_page,
+      exit_page_hostname: exit_page_hostname,
+      pageviews: pageviews,
+      events: events,
+      sign: sign,
+      "entry_meta.key": entry_meta_key,
+      "entry_meta.value": entry_meta_value,
+      utm_medium: utm_medium,
+      utm_source: utm_source,
+      utm_campaign: utm_campaign,
+      utm_content: utm_content,
+      utm_term: utm_term,
+      referrer: referrer,
+      referrer_source: referrer_source,
+      click_id_param: click_id_param,
+      country_code: country_code,
+      subdivision1_code: subdivision1_code,
+      subdivision2_code: subdivision2_code,
+      city_geoname_id: city_geoname_id,
+      screen_size: screen_size,
+      operating_system: operating_system,
+      operating_system_version: operating_system_version,
+      browser: browser,
+      browser_version: browser_version,
+      timestamp: timestamp,
+      transferred_from: transferred_from,
+      acquisition_channel: acquisition_channel
+    } = session
+
+    [
+      nil2list(hostname),
+      nil2list(site_id),
+      nil2list(user_id),
+      nil2list(session_id),
+      nil2list(ts2int(start)),
+      nil2list(duration),
+      nil2list(is_bounce),
+      nil2list(entry_page),
+      nil2list(exit_page),
+      nil2list(exit_page_hostname),
+      nil2list(pageviews),
+      nil2list(events),
+      nil2list(sign),
+      nil2list(entry_meta_key),
+      nil2list(entry_meta_value),
+      nil2list(utm_medium),
+      nil2list(utm_source),
+      nil2list(utm_campaign),
+      nil2list(utm_content),
+      nil2list(utm_term),
+      nil2list(referrer),
+      nil2list(referrer_source),
+      nil2list(click_id_param),
+      nil2list(country_code),
+      nil2list(subdivision1_code),
+      nil2list(subdivision2_code),
+      nil2list(city_geoname_id),
+      nil2list(screen_size),
+      nil2list(operating_system),
+      nil2list(operating_system_version),
+      nil2list(browser),
+      nil2list(browser_version),
+      nil2list(ts2int(timestamp)),
+      nil2list(transferred_from),
+      nil2list(acquisition_channel)
+    ]
+  end
+
+  @compile {:inline, nil2list: 1}
+  defp nil2list(nil), do: []
+  defp nil2list(value), do: value
+
+  {naive_epoch_gregorian, 0} = NaiveDateTime.to_gregorian_seconds(~N[1970-01-01 00:00:00])
+
+  @compile {:inline, ts2int: 1}
+  defp ts2int(%NaiveDateTime{} = naive) do
+    {s, _} = NaiveDateTime.to_gregorian_seconds(naive)
+    s - unquote(naive_epoch_gregorian)
+  end
+
+  defp ts2int(%DateTime{} = dt), do: DateTime.to_unix(dt)
+  defp ts2int(nil = n), do: n
 
   def onerecv(socket) do
     {:ok, <<"tinysock", size::64-little>>} =
@@ -215,13 +318,13 @@ Benchee.run(
     #    end,
     #    before_each: fn tab -> {tab, "term_to_binary#{System.unique_integer()}.dump"} end,
     #    after_each: fn {_tab, file} -> File.rm(file) end},
-    # "dump as tab2file" =>
-    #   {fn {tab, file} = input ->
-    #      :ets.tab2file(tab, file)
-    #      input
-    #    end,
-    #    before_each: fn tab -> {tab, ~c"tab2file#{System.unique_integer()}.dump"} end,
-    #    after_each: fn {_tab, file} -> File.rm(file) end},
+    "dump as tab2file" =>
+      {fn {tab, file} = input ->
+         :ets.tab2file(tab, file)
+         input
+       end,
+       before_each: fn tab -> {tab, ~c"tab2file#{System.unique_integer()}.dump"} end,
+       after_each: fn {_tab, file} -> File.rm(file) end},
     "pass through socket" =>
       {fn {tab, file} = input ->
          Bench.sendscan(tab, file, &:erlang.term_to_binary/1)
