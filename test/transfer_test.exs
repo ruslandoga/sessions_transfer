@@ -2,11 +2,12 @@ defmodule Plausible.Session.TransferTest do
   use ExUnit.Case
   import Plausible.Factory
 
+  @tag :slow
   test "it works" do
     tmp_dir = tmp_dir()
 
     old = start_another_plausible(tmp_dir)
-    Enum.each(1..10, fn _ -> process_event(old, build(:event, name: "pageview")) end)
+    Enum.each(1..250, fn _ -> process_event(old, build(:event, name: "pageview")) end)
 
     new = start_another_plausible(tmp_dir)
     await_transfer(new)
@@ -15,7 +16,7 @@ defmodule Plausible.Session.TransferTest do
   end
 
   # normal `@tag :tmp_dir` might not work if the path is too long for unix domain sockets (>104)
-  # this one makes paths a bit shorter like "/tmp/plausible-1320/"
+  # this one makes paths a bit shorter like "/tmp/plausible-123/"
   defp tmp_dir do
     tmp_dir = Path.join(System.tmp_dir!(), "plausible-#{System.unique_integer([:positive])}")
     if File.exists?(tmp_dir), do: File.rm_rf!(tmp_dir)
@@ -91,7 +92,7 @@ defmodule Plausible.Session.TransferTest do
     Enum.sort_by(records, fn {key, _} -> key end)
   end
 
-  defp await_transfer(pid, timeout \\ 500) do
+  defp await_transfer(pid, timeout \\ :timer.seconds(1)) do
     test = self()
 
     spawn_link(fn ->
